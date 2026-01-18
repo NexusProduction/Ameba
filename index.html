@@ -735,27 +735,37 @@
                 ? `${CONFIG.CORS_PROXY}${encodeURIComponent(apiUrl)}`
                 : apiUrl;
             
-            const response = await fetch(url);
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                }
+            });
             
             if (!response.ok) {
                 if (response.status === 429 && retries < CONFIG.MAX_RETRIES) {
+                    console.log(`Rate limited, retry ${retries + 1}/${CONFIG.MAX_RETRIES}`);
                     await new Promise(resolve => setTimeout(resolve, CONFIG.RETRY_DELAY * (retries + 1)));
                     return fetchNewsWithRetry(query, page, retries + 1);
                 }
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
 
-            const data = await response.json();
+            const text = await response.text();
+            let data;
             
-            // Handle proxy response format
-            if (typeof data === 'string') {
-                return JSON.parse(data);
+            try {
+                data = JSON.parse(text);
+            } catch (e) {
+                console.error('JSON parse error:', e);
+                throw new Error('Invalid response format');
             }
             
             return data;
         } catch (error) {
             if (retries < CONFIG.MAX_RETRIES) {
-                await new Promise(resolve => setTimeout(resolve, CONFIG.RETRY_DELAY));
+                console.log(`Fetch error, retry ${retries + 1}/${CONFIG.MAX_RETRIES}:`, error.message);
+                await new Promise(resolve => setTimeout(resolve, CONFIG.RETRY_DELAY * (retries + 1)));
                 return fetchNewsWithRetry(query, page, retries + 1);
             }
             throw error;
@@ -783,8 +793,10 @@
         try {
             const data = await fetchNewsWithRetry(query, state.currentPage);
             
-            if (data.articles && data.articles.length > 0) {
+            if (data && data.articles && data.articles.length > 0) {
                 const filteredArticles = data.articles.filter(article => {
+                    if (!article || !article.title) return false;
+                    
                     const text = `${article.title} ${article.description || ''}`;
                     const isClean = !containsNegativeKeywords(text);
                     const isUnique = !state.seenUrls.has(article.url);
@@ -797,7 +809,12 @@
                 });
 
                 state.articles = isNewSearch ? filteredArticles : [...state.articles, ...filteredArticles];
-                renderNews(state.articles);
+                
+                if (state.articles.length > 0) {
+                    renderNews(state.articles);
+                } else {
+                    grid.innerHTML = '<p style="text-align:center;color:var(--muted);grid-column:1/-1;padding:60px 20px;font-size:1.1rem">No news found 🔍<br><small>Try a different search term</small></p>';
+                }
 
                 if (filteredArticles.length < CONFIG.ITEMS_PER_PAGE / 2) {
                     state.hasMore = false;
@@ -807,17 +824,24 @@
             } else {
                 state.hasMore = false;
                 if (state.articles.length === 0) {
-                    grid.innerHTML = '<p style="text-align:center;color:var(--muted);grid-column:1/-1;padding:60px 20px;font-size:1.1rem">No news found 🔍<br><small>Try a different search term</small></p>';
+                    grid.innerHTML = '<p style="text-align:center;color:var(--muted);grid-column:1/-1;padding:60px 20px;font-size:1.1rem">No news available right now 📰<br><small>Please try again in a moment</small></p>';
                 }
             }
         } catch (error) {
             console.error('Error fetching news:', error);
+            
+            // Only show error if we have no articles at all
             if (state.articles.length === 0) {
+                const errorMessage = error.message.includes('Failed to fetch') 
+                    ? 'Connection issue. Please check your internet and try again.'
+                    : error.message;
+                    
                 grid.innerHTML = `
                     <div style="text-align:center;grid-column:1/-1;padding:60px 20px">
-                        <h3 style="color:var(--primary);margin-bottom:15px">Unable to Load News 💜</h3>
-                        <p style="color:var(--muted);margin-bottom:20px">${escapeHtml(error.message)}</p>
-                        <button onclick="location.reload()" style="background:var(--gradient);color:#fff;border:none;padding:14px 30px;border-radius:50px;cursor:pointer;font-weight:600;transition:all 0.3s">Retry</button>
+                        <div style="font-size:4rem;margin-bottom:20px">😕</div>
+                        <h3 style="color:var(--primary);margin-bottom:15px;font-size:1.3rem">Oops! Something went wrong</h3>
+                        <p style="color:var(--muted);margin-bottom:25px;max-width:400px;margin-left:auto;margin-right:auto">${escapeHtml(errorMessage)}</p>
+                        <button onclick="location.reload()" style="background:var(--gradient);color:#fff;border:none;padding:14px 30px;border-radius:50px;cursor:pointer;font-weight:600;transition:all 0.3s;box-shadow:0 4px 15px rgba(124,58,237,0.3)">Retry</button>
                     </div>
                 `;
             }
